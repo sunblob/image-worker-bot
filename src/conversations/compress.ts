@@ -98,6 +98,7 @@ interface ImageRef {
   fileId: string
   filename: string
   mimeType: string
+  fileSize?: number
 }
 
 async function collectImages(
@@ -140,6 +141,7 @@ async function collectImages(
         fileId: photo.file_id,
         filename: `photo_${collected.length + 1}.jpg`,
         mimeType: 'image/jpeg',
+        fileSize: photo.file_size,
       })
     }
     // Image sent as a file/document
@@ -152,6 +154,7 @@ async function collectImages(
         fileId: doc.file_id,
         filename: doc.file_name ?? `image_${collected.length + 1}`,
         mimeType: doc.mime_type!,
+        fileSize: doc.file_size,
       })
     }
     // Ignore everything else
@@ -197,10 +200,20 @@ export async function compressConversation(
   conversation: MyConversation,
   ctx: MyContext,
 ): Promise<void> {
+  const userId = ctx.from?.id ?? 'unknown'
+
   try {
     const format = await askFormat(conversation, ctx)
     const quality = await askQuality(conversation, ctx)
     const imageRefs = await collectImages(conversation, ctx)
+
+    console.log(
+      `[compress] user=${userId} format=${format.toUpperCase()} quality=${quality} images=${imageRefs.length}`,
+    )
+    for (const [i, ref] of imageRefs.entries()) {
+      const sizeStr = ref.fileSize != null ? ` (${formatBytes(ref.fileSize)})` : ''
+      console.log(`[compress] user=${userId}  #${i + 1} ${ref.filename}${sizeStr}`)
+    }
 
     // Progress message — we edit it as we go
     const progressMsg = await ctx.reply(
@@ -259,6 +272,12 @@ export async function compressConversation(
           ? Math.round((1 - result.sizeAfter / result.sizeBefore) * 100)
           : 0
 
+      console.log(
+        `[compress] user=${userId}  result: ${result.originalName}` +
+          `  ${formatBytes(result.sizeBefore)} → ${formatBytes(sizeAfter)}` +
+          `  (-${savings}%)  ${format.toUpperCase()} q${quality}`,
+      )
+
       const caption =
         `📄 <b>${result.originalName}</b>\n` +
         `${formatBytes(result.sizeBefore)} → ${formatBytes(sizeAfter)}\n` +
@@ -291,6 +310,7 @@ export async function compressConversation(
     )
   } catch (err) {
     const message = err instanceof Error ? err.message : 'An unexpected error occurred.'
+    console.error(`[compress] user=${userId} error: ${message}`)
     await ctx.reply(
       `❌ <b>Error:</b> ${message}\n\nPlease try again with /compress.`,
       { parse_mode: 'HTML' },

@@ -33,6 +33,12 @@ bot.catch((err) => {
   console.error('[bot] Unhandled error:', err.error)
 })
 
+await bot.api.setMyCommands([
+  { command: 'start', description: 'Start the bot' },
+  { command: 'help', description: 'Show help' },
+  { command: 'compress', description: 'Compress images' },
+])
+
 bot.start({
   onStart: () => console.log(`[bot] image-worker-bot started (API: ${config.apiBaseUrl})`),
 })
