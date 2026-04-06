@@ -283,10 +283,9 @@ export async function compressConversation(
         `${formatBytes(result.sizeBefore)} → ${formatBytes(sizeAfter)}\n` +
         `💾 Saved: <b>${savings}%</b>`
 
-      await ctx.replyWithDocument(new InputFile(new Uint8Array(data), outputFilename), {
-        caption,
-        parse_mode: 'HTML',
-      })
+      await ctx.replyWithDocument(new InputFile(new Uint8Array(data), outputFilename))
+
+      await ctx.reply(caption, { parse_mode: 'HTML' })
     }
 
     // Report any files that failed immediately at the /compress stage
