@@ -26,10 +26,14 @@ export async function compress(
   files: File[],
   format: string,
   quality: number,
+  urls: string[] = [],
 ): Promise<CompressJob[]> {
   const formData = new FormData()
   for (const file of files) {
     formData.append('files', file)
+  }
+  for (const url of urls) {
+    formData.append('urls', url)
   }
   formData.append('format', format)
   formData.append('quality', String(quality))

@@ -30,6 +30,10 @@ async function askFormat(conversation: MyConversation, ctx: MyContext): Promise<
     .row()
     .text('JPEG', 'fmt:jpeg')
     .text('PNG', 'fmt:png')
+    .row()
+    .text('TIFF', 'fmt:tiff')
+    .text('HEIF', 'fmt:heif')
+    .text('JPEG XL', 'fmt:jxl')
 
   await ctx.reply('🖼 <b>Step 1 of 3 — Choose output format:</b>', {
     parse_mode: 'HTML',
@@ -92,7 +96,7 @@ async function askQuality(conversation: MyConversation, ctx: MyContext): Promise
   return quality
 }
 
-// ─── Step 3: Image collection ─────────────────────────────────────────────────
+// ─── Step 3: Image / URL collection ──────────────────────────────────────────
 
 interface ImageRef {
   fileId: string
@@ -101,22 +105,39 @@ interface ImageRef {
   fileSize?: number
 }
 
-async function collectImages(
+interface CollectedInputs {
+  imageRefs: ImageRef[]
+  urls: string[]
+}
+
+/** Extract all http(s) URLs from a text message (space/newline-separated). */
+function extractUrls(text: string): string[] {
+  return text
+    .split(/\s+/)
+    .map((s) => s.trim())
+    .filter((s) => /^https?:\/\/.+/i.test(s))
+}
+
+async function collectInputs(
   conversation: MyConversation,
   ctx: MyContext,
-): Promise<ImageRef[]> {
-  const collected: ImageRef[] = []
+): Promise<CollectedInputs> {
+  const imageRefs: ImageRef[] = []
+  const urls: string[] = []
 
-  const buildKeyboard = (count: number) =>
+  const totalCount = () => imageRefs.length + urls.length
+
+  const buildKeyboard = (n: number) =>
     new InlineKeyboard().text(
-      count === 0 ? '✅ Process (0 images)' : `✅ Process (${count} image${count === 1 ? '' : 's'})`,
+      n === 0 ? '✅ Process (0 items)' : `✅ Process (${n} item${n === 1 ? '' : 's'})`,
       'process',
     )
 
   const promptMsg = await ctx.reply(
-    '📤 <b>Step 3 of 3 — Send your images</b>\n\n' +
-      'Send photos or image files (as documents for full resolution).\n' +
-      'You can send multiple images or an entire album.\n\n' +
+    '📤 <b>Step 3 of 3 — Add your images</b>\n\n' +
+      '• Send <b>photos</b> or <b>image files</b> (as documents for full resolution)\n' +
+      '• Paste one or more <b>image URLs</b> (http/https) as a text message\n' +
+      '• Mix files and links freely — send as many as you like\n\n' +
       'Tap <b>✅ Process</b> when you\'re done.',
     { parse_mode: 'HTML', reply_markup: buildKeyboard(0) },
   )
@@ -126,8 +147,8 @@ async function collectImages(
 
     // "Process" button tapped
     if (update.callbackQuery?.data === 'process') {
-      if (collected.length === 0) {
-        await update.answerCallbackQuery({ text: 'Please send at least one image first!' })
+      if (totalCount() === 0) {
+        await update.answerCallbackQuery({ text: 'Please send at least one image or URL first!' })
         continue
       }
       await update.answerCallbackQuery({ text: 'Starting compression…' })
@@ -137,9 +158,9 @@ async function collectImages(
     // Telegram-compressed photo
     if (update.message?.photo) {
       const photo = update.message.photo[update.message.photo.length - 1]
-      collected.push({
+      imageRefs.push({
         fileId: photo.file_id,
-        filename: `photo_${collected.length + 1}.jpg`,
+        filename: `photo_${imageRefs.length + 1}.jpg`,
         mimeType: 'image/jpeg',
         fileSize: photo.file_size,
       })
@@ -150,12 +171,26 @@ async function collectImages(
       update.message.document.mime_type?.startsWith('image/')
     ) {
       const doc = update.message.document
-      collected.push({
+      imageRefs.push({
         fileId: doc.file_id,
-        filename: doc.file_name ?? `image_${collected.length + 1}`,
+        filename: doc.file_name ?? `image_${imageRefs.length + 1}`,
         mimeType: doc.mime_type!,
         fileSize: doc.file_size,
       })
+    }
+    // Text message — try to extract URLs
+    else if (update.message?.text) {
+      const found = extractUrls(update.message.text)
+      if (found.length > 0) {
+        urls.push(...found)
+        await update.reply(
+          `🔗 Added <b>${found.length}</b> URL${found.length === 1 ? '' : 's'}. Send more or tap ✅ Process.`,
+          { parse_mode: 'HTML' },
+        )
+      } else {
+        // Not a URL — ignore silently (could be a stray command, etc.)
+        continue
+      }
     }
     // Ignore everything else
     else {
@@ -165,14 +200,14 @@ async function collectImages(
     // Update the "Process" button counter
     try {
       await ctx.api.editMessageReplyMarkup(promptMsg.chat.id, promptMsg.message_id, {
-        reply_markup: buildKeyboard(collected.length),
+        reply_markup: buildKeyboard(totalCount()),
       })
     } catch {
-      // Editing can fail if the message markup hasn't changed — safe to ignore
+      // Editing can fail if the markup hasn't changed — safe to ignore
     }
   }
 
-  return collected
+  return { imageRefs, urls }
 }
 
 // ─── File download from Telegram ─────────────────────────────────────────────
@@ -205,19 +240,27 @@ export async function compressConversation(
   try {
     const format = await askFormat(conversation, ctx)
     const quality = await askQuality(conversation, ctx)
-    const imageRefs = await collectImages(conversation, ctx)
+    const { imageRefs, urls } = await collectInputs(conversation, ctx)
 
     console.log(
-      `[compress] user=${userId} format=${format.toUpperCase()} quality=${quality} images=${imageRefs.length}`,
+      `[compress] user=${userId} format=${format.toUpperCase()} quality=${quality}` +
+        ` images=${imageRefs.length} urls=${urls.length}`,
     )
     for (const [i, ref] of imageRefs.entries()) {
       const sizeStr = ref.fileSize != null ? ` (${formatBytes(ref.fileSize)})` : ''
-      console.log(`[compress] user=${userId}  #${i + 1} ${ref.filename}${sizeStr}`)
+      console.log(`[compress] user=${userId}  #${i + 1} file: ${ref.filename}${sizeStr}`)
     }
+    for (const [i, url] of urls.entries()) {
+      console.log(`[compress] user=${userId}  #${imageRefs.length + i + 1} url: ${url}`)
+    }
+
+    const totalItems = imageRefs.length + urls.length
 
     // Progress message — we edit it as we go
     const progressMsg = await ctx.reply(
-      `⏳ Downloading <b>${imageRefs.length}</b> file${imageRefs.length === 1 ? '' : 's'} from Telegram…`,
+      imageRefs.length > 0
+        ? `⏳ Downloading <b>${imageRefs.length}</b> file${imageRefs.length === 1 ? '' : 's'} from Telegram…`
+        : `⏳ Fetching <b>${urls.length}</b> image${urls.length === 1 ? '' : 's'} from the web…`,
       { parse_mode: 'HTML' },
     )
 
@@ -234,11 +277,12 @@ export async function compressConversation(
     }
 
     await editProgress(
-      `⏳ Uploading to compressor (<b>${format.toUpperCase()}</b>, quality <b>${quality}</b>)…`,
+      `⏳ Uploading <b>${totalItems}</b> item${totalItems === 1 ? '' : 's'} to compressor` +
+        ` (<b>${format.toUpperCase()}</b>, quality <b>${quality}</b>)…`,
     )
 
-    // Submit to API (single batch call)
-    const jobs = await conversation.external(() => compress(files, format, quality))
+    // Submit to API — files + URLs in one batch call
+    const jobs = await conversation.external(() => compress(files, format, quality, urls))
 
     const validJobs = jobs.filter((j) => !j.status) // exclude immediate errors
     const errorJobs = jobs.filter((j) => j.status === 'error')
@@ -304,7 +348,7 @@ export async function compressConversation(
     }
 
     await ctx.reply(
-      `✅ Done! Compressed <b>${results.length}</b> image${results.length === 1 ? '' : 's'}.\n\nRun /compress to compress more.`,
+      `✅ Done! Compressed <b>${results.length}</b> image${results.length === 1 ? '' : 's'}.\n\nSend /compress to compress more.`,
       { parse_mode: 'HTML' },
     )
   } catch (err) {
